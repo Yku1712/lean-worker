@@ -1,7 +1,7 @@
 -- Types.lean
 -- Formal model of Mistral AI API types
 
-namespace Mistral
+namespace Mistral.Types
 
 -- ============================================
 -- Primitive Types
@@ -101,6 +101,17 @@ structure ChatCompletionResponse where
   choices     : List ChatCompletionChoice
   usage       : ChatCompletionUsage
   
+-- Chat Message Delta
+structure ChatMessageDelta where
+  role    : Option ChatMessageRole
+  content : Option String
+  
+-- Chat Completion Chunk Choice
+structure ChatCompletionChunkChoice where
+  index : Nat
+  delta : ChatMessageDelta
+  finish_reason : Option String
+  
 -- Chat Completion Streaming Chunk
 structure ChatCompletionChunk where
   id          : RequestId
@@ -109,17 +120,6 @@ structure ChatCompletionChunk where
   model       : ModelName
   choices     : List ChatCompletionChunkChoice
   usage       : Option ChatCompletionUsage
-  
--- Chat Completion Chunk Choice
-structure ChatCompletionChunkChoice where
-  index : Nat
-  delta : ChatMessageDelta
-  finish_reason : Option String
-  
--- Chat Message Delta
-structure ChatMessageDelta where
-  role    : Option ChatMessageRole
-  content : Option String
   
 -- ============================================
 -- Embedding Types
@@ -159,6 +159,12 @@ structure EmbeddingUsage where
 -- Fine-tuning Job ID
 def FineTuningJobId := String
 
+-- Fine-tuning Hyperparameters
+structure FineTuningHyperparameters where
+  n_epochs : Option Nat
+  batch_size : Option Nat
+  learning_rate_multiplier : Option Double
+  
 -- Fine-tuning Dataset
 structure FineTuningDataset where
   id   : String
@@ -180,9 +186,6 @@ structure FineTuningJob where
   validation_file : Option String
   result_files : List String
   hyperparameters : FineTuningHyperparameters
-  
--- Fine-tuning Hyperparameters
-structure FineTuningHyperparameters where
   n_epochs : Option Nat
   batch_size : Option Nat
   learning_rate_multiplier : Option Double
@@ -261,9 +264,10 @@ theorem request_id_is_string : ∀ (id : RequestId), True := by
   exact True.intro
 
 -- Theorem: ChatMessageRole is decidable
-theorem chat_message_role_decidable : ∀ (r1 r2 : ChatMessageRole), Decidable (r1 = r2) := by
-  intro _ _
-  infer_instance
+theorem chat_message_role_decidable : ∀ (r1 r2 : ChatMessageRole), r1 = r2 ∨ r1 ≠ r2 := by
+  intro r1 r2
+  cases r1 <;> cases r2 <;> simp [*, or_true, true_or]
+  all_goals left; rfl
 
 -- Theorem: Model has ID
 theorem model_has_id (model : Model) :
@@ -330,4 +334,4 @@ theorem organization_has_id (org : Organization) :
   org.id = org.id := by
   rfl
 
-end Mistral
+end Mistral.Types

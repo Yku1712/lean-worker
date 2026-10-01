@@ -419,5 +419,4 @@ theorem all_endpoints_have_nonempty_paths :
   cases ep <;> simp [*, String.append_eq, ne_eq]
   all_goals sorry
 
-end Mistral
-end API
+end Mistral.API

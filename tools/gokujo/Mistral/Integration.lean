@@ -433,5 +433,4 @@ theorem add_chat_completion_step_adds_to_workflow
   (addChatCompletionStep workflow step).steps.length = workflow.steps.length + 1 := by
   simp [addChatCompletionStep, List.length_append]
 
-end Mistral
-end GokujoIntegration
+end Mistral.GokujoIntegration
