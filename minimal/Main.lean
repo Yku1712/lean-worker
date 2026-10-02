@@ -15,29 +15,29 @@ This module is the single entry point of the merged project.  It pulls together
   (`Proxy.Core`, `Proxy.Monitor`, `Proxy.Dashboard`, `Proxy.Concrete`,
   `Proxy.Interop`, `Proxy.Example`, `Proxy.Export`).
 -/
-import Mathlib
+-- import Mathlib
 
-import RequestProject.Agent
-import RequestProject.APICapabilities
-import RequestProject.CommandExecution
-import RequestProject.CreditUsage
-import RequestProject.ExecutionTrace
-import RequestProject.ToolProvenance
-import RequestProject.Twin
+import Agent
+import APICapabilities
+import CommandExecution
+import CreditUsage
+import ExecutionTrace
+import ToolProvenance
+import Twin
 
-import RequestProject.Protocol.Core
-import RequestProject.Protocol.Server
-import RequestProject.Protocol.Client
-import RequestProject.Protocol.Soundness
-import RequestProject.Protocol.Example
+import Protocol.Core
+import Protocol.Server
+import Protocol.Client
+import Protocol.Soundness
+import Protocol.Example
 
-import RequestProject.Proxy.Core
-import RequestProject.Proxy.Monitor
-import RequestProject.Proxy.Dashboard
-import RequestProject.Proxy.Concrete
-import RequestProject.Proxy.Interop
-import RequestProject.Proxy.Example
-import RequestProject.Proxy.Export
+import Proxy.Core
+import Proxy.Monitor
+import Proxy.Dashboard
+import Proxy.Concrete
+import Proxy.Interop
+import Proxy.Example
+import Proxy.Export
 
 open scoped BigOperators
 open scoped Real

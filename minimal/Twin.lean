@@ -9,7 +9,7 @@
 
 -- Merged: the credit/token layer lives in `RequestProject.CreditUsage`,
 -- which extends the same `Twin` namespace; Wave V.5 below refers to it.
-import RequestProject.CreditUsage
+import CreditUsage
 
 namespace Twin
 
