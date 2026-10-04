@@ -20,11 +20,11 @@ jobs:
       id-token: write
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout code (meta-introspector)
+        uses: meta-introspector/checkout@v4
         
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Set up Python (meta-introspector)
+        uses: meta-introspector/lean-action@main
         with:
           python-version: '3.11'
         
@@ -37,29 +37,20 @@ jobs:
           cd minimal
           python3 generate_registry.py
           
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: arist/lean-worker:latest
-          file: Dockerfile
-        
+      - name: Build Docker image
+        run: |
+          docker build -t arist/lean-worker:latest .
+          
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
         
       - name: Push to Docker Hub
         run: |
           docker push arist/lean-worker:latest
           
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
+      - name: Deploy to Cloudflare Pages (meta-introspector)
+        uses: meta-introspector/cloudflare-pages-action@v1
         with:
           api_token: ${{ secrets.CF_API_TOKEN }}
           account_id: ${{ secrets.CF_ACCOUNT_ID }}
