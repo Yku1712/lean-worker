@@ -11,6 +11,7 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     strategy:
       matrix:
         # Two-stage build: fast without mathlib, then full with mathlib
