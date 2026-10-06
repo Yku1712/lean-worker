@@ -1616,6 +1616,7 @@ structure AxiomAudit where
   lines : List AxiomLine := []
   declared : List String := []
   scanned : Bool := false
+  noSources : Bool := false
   exitCode : Nat := 0
   complaints : List String := []
   deriving Inhabited
@@ -1637,6 +1638,7 @@ def resultCount (a : AxiomAudit) (n : String) : Nat := (a.lines.filter (·.name 
 /-- Every reason the audit failed or cannot be trusted, apart from a theorem
 using a disallowed axiom.  Fail-closed: the audit passes only if this is empty. -/
 def auditProblems (allowed : List String) (a : AxiomAudit) : List String :=
+  (if a.noSources then ["no Lean source files were found, so nothing was audited"] else []) ++
   (if a.exitCode != 0 then ["the audit driver exited with code " ++ toString a.exitCode] else []) ++
   a.complaints.map (fun l => "the audit driver reported: " ++ l) ++
   (if a.scanned then [] else ["the scan for declared axioms did not complete"]) ++
@@ -1650,6 +1652,9 @@ def auditProblems (allowed : List String) (a : AxiomAudit) : List String :=
   (a.declared.filter (fun n => !allowed.contains n)).map
     (fun n => "the project declares axiom " ++ n ++ ", which is not allowed")
 
+/-- What the audit establishes when there are no source files: nothing. -/
+def noSourceAudit : AxiomAudit := { noSources := true }
+
 /-- Build a driver file that lists the axioms the project declares and prints
 the axioms of every theorem, run it, and report. -/
 def auditAxioms (cfg : Config) (ch : Chain) (infos : List Syn.FileInfo) :
@@ -1657,7 +1662,7 @@ def auditAxioms (cfg : Config) (ch : Chain) (infos : List Syn.FileInfo) :
   let names := Util.dedup <| infos.flatMap (fun f =>
     f.decls.filterMap (fun d =>
       if provingKinds.contains d.kind && d.name != "" then some d.name else none))
-  if infos.isEmpty then return { scanned := true }
+  if infos.isEmpty then return noSourceAudit
   let modules := infos.map (·.module)
   let imports := modules.map (fun m => "import " ++ m) ++ ["import Lean"]
   let body := names.map (fun n => "#print axioms " ++ n)
@@ -1917,6 +1922,9 @@ def cases : List Case :=
   , ("the audit fails if the project declares a disallowed axiom",
       !(Sys.auditProblems allowed (Sys.readAudit [] 0
         (Sys.axiomDeclMarker ++ "Foo.bad\n" ++ Sys.axiomScanDone))).isEmpty)
+  , ("the audit fails if there are no source files",
+      (Sys.auditProblems allowed Sys.noSourceAudit).contains
+        "no Lean source files were found, so nothing was audited")
   , ("a declared axiom on the allow-list is accepted",
       (Sys.auditProblems (allowed ++ ["Foo.bad"]) (Sys.readAudit [] 0
         (Sys.axiomDeclMarker ++ "Foo.bad\n" ++ Sys.axiomScanDone))).isEmpty)
