@@ -1006,7 +1006,10 @@ def commands : List Command :=
     , summary := "audit the axioms behind every theorem"
     , body := ["Builds, then generates and runs a driver that prints the axioms of every",
                "declaration found by the parser, and flags anything outside the allowed set",
-               "(propext, Classical.choice, Quot.sound by default; change with --allow-axiom)."] }
+               "(propext, Classical.choice, Quot.sound by default; change with --allow-axiom).",
+               "Fails closed: it also fails if the driver reports an error, if any theorem",
+               "found by the parser could not be audited (a private one, say), or if the",
+               "audited sources declare an axiom of their own."] }
   , { name := "check", args := "[paths...]"
     , summary := "scan + graph + build + sorry + axioms, as one gate"
     , body := ["The single command to put in CI, or to hand to an agent as its definition of",
@@ -1561,32 +1564,105 @@ structure AxiomLine where
   axioms : List String
   deriving Inhabited
 
-/-- Parse the compiler's answer for one declaration. -/
+/-- Parse the compiler's answer for one declaration.  The name is everything
+between the opening quote and the closing `' depends on axioms:` (or
+`' does not depend on any axioms`), so a name with a prime in it, such as
+`foo'`, is read whole.  A line of any other shape is not an answer. -/
 def parseAxiomLine (l : String) : Option AxiomLine :=
   let l := Util.trim l
   if !(l.startsWith "'") then none
   else
-    match l.splitOn "'" with
-    | _ :: nm :: rest =>
-        let tail := String.intercalate "'" rest
-        if (tail.splitOn "depends on axioms:").length == 2 then
-          let after := (tail.splitOn "depends on axioms:").getD 1 ""
-          let after := Util.trim after
+    let body := Util.dropPrefix l "'"
+    match body.splitOn "' depends on axioms:" with
+    | [nm, after] =>
+        let after := Util.trim after
+        if !(after.startsWith "[" && after.endsWith "]") then none
+        else
           let after := Util.dropPrefix after "["
-          let after := if after.endsWith "]" then (after.dropEnd 1).toString else after
+          let after := (after.dropEnd 1).toString
           let axs := ((after.splitOn ",").map Util.trim).filter (fun a => a != "")
           some { name := nm, axioms := axs }
-        else some { name := nm, axioms := [] }
-    | _ => none
+    | _ =>
+        match body.splitOn "' does not depend on any axioms" with
+        | [nm, ""] => some { name := nm, axioms := [] }
+        | _ => none
+
+/-- Does this line open a `#print axioms` list that the pretty-printer wrapped? -/
+def opensWrappedAxiomList (l : String) : Bool :=
+  let t := Util.trim l
+  t.startsWith "'" && (t.splitOn "' depends on axioms: [").length == 2 && !t.endsWith "]"
+
+/-- Rejoin `#print axioms` answers that the pretty-printer wrapped over several
+lines (it does, once the list is long): an open list absorbs the indented lines
+after it until it closes.  An answer that never closes is dropped, so its
+theorem counts as unaudited instead of as audited with a truncated list. -/
+def joinAxiomLines (ls : List String) : List String :=
+  let step : List String × Option String → String → List String × Option String
+    | (acc, some cur), l =>
+        if l.startsWith " " then
+          let cur := cur ++ " " ++ Util.trim l
+          if cur.endsWith "]" then (cur :: acc, none) else (acc, some cur)
+        else if opensWrappedAxiomList l then (acc, some (Util.trim l))
+        else (l :: acc, none)
+    | (acc, none), l =>
+        if opensWrappedAxiomList l then (acc, some (Util.trim l)) else (l :: acc, none)
+  (ls.foldl step ([], none)).1.reverse
+
+/-- The name `#print axioms` reports for a scanned name: `_root_.` resets the
+namespace. -/
+def auditName (n : String) : String :=
+  match n.splitOn "_root_." with
+  | [_] => n
+  | parts => parts.getLastD n
+
+/-- The theorems the audit must cover. -/
+def auditTargets (infos : List Syn.FileInfo) : List String :=
+  Util.dedup <| infos.flatMap (fun f =>
+    f.decls.filterMap (fun d =>
+      if provingKinds.contains d.kind && d.name != "" then some (auditName d.name) else none))
+
+/-- An `axiom` declared in the audited sources: (path, name, line). -/
+def declaredAxioms (infos : List Syn.FileInfo) : List (String × String × Nat) :=
+  infos.flatMap (fun f =>
+    (f.decls.filter (fun d => d.kind == "axiom")).map (fun d => (f.path, d.name, d.line)))
+
+/-- What the audit driver established, and what it could not. -/
+structure AxiomAudit where
+  /-- The answers that were parsed. -/
+  lines : List AxiomLine := []
+  /-- The theorems that had to be audited. -/
+  expected : List String := []
+  /-- Expected theorems with no answer: they were not audited. -/
+  unaudited : List String := []
+  /-- Error lines the driver printed. -/
+  errors : List String := []
+  /-- The driver's exit code. -/
+  exitCode : Nat := 0
+  deriving Inhabited
+
+/-- Did the driver run cleanly and answer for every expected theorem? -/
+def AxiomAudit.complete (a : AxiomAudit) : Bool :=
+  a.exitCode == 0 && a.errors.isEmpty && a.unaudited.isEmpty
+
+/-- Read the driver's output against the list of theorems it was asked about. -/
+def readAudit (expected : List String) (code : Nat) (output : String) : AxiomAudit :=
+  let lines := joinAxiomLines (Util.lines output)
+  let parsed := lines.filterMap parseAxiomLine
+  let parsed := parsed.filter (fun l => expected.contains l.name)
+  let answered := Util.dedup (parsed.map (·.name))
+  { lines := parsed
+    expected := expected
+    unaudited := expected.filter (fun n => !answered.contains n)
+    errors := lines.filter (fun l => (l.splitOn ": error").length > 1)
+    exitCode := code }
 
 /-- Build a driver file that prints the axioms of every theorem, run it, and
-report. -/
+report.  A theorem the driver cannot answer for (it is `private`, say, or the
+driver fails) is reported as unaudited, never passed over. -/
 def auditAxioms (cfg : Config) (ch : Chain) (infos : List Syn.FileInfo) :
-    IO (List AxiomLine × String) := do
-  let names := Util.dedup <| infos.flatMap (fun f =>
-    f.decls.filterMap (fun d =>
-      if provingKinds.contains d.kind && d.name != "" then some d.name else none))
-  if names.isEmpty then return ([], "")
+    IO AxiomAudit := do
+  let names := auditTargets infos
+  if names.isEmpty then return {}
   let imports := infos.map (fun f => "import " ++ f.module)
   let body := names.map (fun n => "#print axioms " ++ n)
   let driver := Util.unlines (imports ++ [""] ++ body ++ [""])
@@ -1595,11 +1671,8 @@ def auditAxioms (cfg : Config) (ch : Chain) (infos : List Syn.FileInfo) :
   let path := dir ++ "/GokujoAxiomAudit.lean"
   IO.FS.writeFile path driver
   let env ← leanEnv cfg ch
-  let (_, out, err) ← run ch.leanCmd (ch.leanPre ++ [path]) (some cfg.root) env
-  let lines := (Util.lines (out ++ "\n" ++ err))
-  let parsed := lines.filterMap parseAxiomLine
-  let complaints := lines.filter (fun l => (l.splitOn "error").length > 1)
-  return (parsed, Util.unlines complaints)
+  let (code, out, err) ← run ch.leanCmd (ch.leanPre ++ [path]) (some cfg.root) env
+  return readAudit names code (out ++ "\n" ++ err)
 
 /-- Axioms outside the allowed set. -/
 def offending (cfg : Config) (a : AxiomLine) : List String :=
@@ -1816,6 +1889,34 @@ def cases : List Case :=
       match Sys.parseAxiomLine "'Foo.baz' does not depend on any axioms" with
       | some a => a.name == "Foo.baz" && a.axioms == []
       | none => false)
+  , ("a primed name is read whole",
+      match Sys.parseAxiomLine "'Foo.bar'' depends on axioms: [propext]" with
+      | some a => a.name == "Foo.bar'" && a.axioms == ["propext"]
+      | none => false)
+  , ("an error is not an axiom-free answer",
+      (Sys.parseAxiomLine "'hidden' is not a theorem").isNone)
+  , ("a wrapped axiom list is read in full",
+      match (Sys.joinAxiomLines ["'w' depends on axioms: [propext,", " myAx,",
+              " Quot.sound]"]).filterMap Sys.parseAxiomLine with
+      | [a] => a.name == "w" && a.axioms == ["propext", "myAx", "Quot.sound"]
+      | _ => false)
+  , ("an unterminated axiom list is not an answer",
+      ((Sys.joinAxiomLines ["'w' depends on axioms: [propext,", "next"]).filterMap
+        Sys.parseAxiomLine).isEmpty)
+  , ("an unanswered theorem is unaudited",
+      let r := Sys.readAudit ["hidden", "good"] 1
+        ("D.lean:4:14: error(lean.unknownIdentifier): Unknown constant `hidden`\n" ++
+         "'good' does not depend on any axioms")
+      r.unaudited == ["hidden"] && r.errors.length == 1 && !r.complete)
+  , ("a clean driver run is complete",
+      (Sys.readAudit ["good"] 0 "'good' does not depend on any axioms").complete)
+  , ("a failing driver is never complete",
+      !(Sys.readAudit ["good"] 1 "'good' does not depend on any axioms").complete)
+  , ("declared axioms are found",
+      (Sys.declaredAxioms [Syn.parseFile "Bad.lean"
+        "axiom badAx : False\n\nprivate theorem hidden : 1 = 2 :=\n  badAx.elim\n"]).map
+        (·.2.1) == ["badAx"])
+  , ("_root_ resets the namespace", Sys.auditName "Demo._root_.top" == "top")
   , ("module names come from paths",
       Syn.moduleOfPath "RequestProject/Wasm/Core.lean" == "RequestProject.Wasm.Core")
   , ("digests are stable", Util.digest "abc" == Util.digest "abc")
@@ -2069,28 +2170,42 @@ def axioms (a : Args) : IO UInt32 := do
   if results.any (fun r => r.status == .failed) then
     IO.eprintln "  build failed; cannot audit axioms"
     return 1
-  let (lines, complaints) ← auditAxioms cfg ch infos
+  let audit ← auditAxioms cfg ch infos
+  let lines := audit.lines
   let bad := lines.filter (fun l => !(offending cfg l).isEmpty)
   let observed := Util.dedup (lines.flatMap (·.axioms))
+  let declared := declaredAxioms infos
+  let ok := bad.isEmpty && audit.complete && declared.isEmpty
   if cfg.json then
     IO.println (jobj
       [("audited", jnat lines.length),
+       ("expected", jnat audit.expected.length),
+       ("unaudited", jarr (audit.unaudited.map jstr)),
+       ("driver_exit", jnat audit.exitCode),
+       ("driver_errors", jarr (audit.errors.map jstr)),
+       ("declared_axioms", jarr (declared.map (fun d =>
+          jobj [("path", jstr d.1), ("name", jstr d.2.1), ("line", jnat d.2.2)]))),
        ("allowed", jarr (cfg.allowAxioms.map jstr)),
        ("observed", jarr (observed.map jstr)),
        ("violations", jarr (bad.map (fun l =>
           jobj [("name", jstr l.name), ("axioms", jarr ((offending cfg l).map jstr))]))),
-       ("ok", jbool bad.isEmpty)])
+       ("ok", jbool ok)])
   else
-    put (["  audited " ++ toString lines.length ++ " declarations",
+    put ([s!"  audited {lines.length} of {audit.expected.length} declarations",
           "  allowed:  " ++ String.intercalate ", " cfg.allowAxioms,
           "  observed: " ++ (if observed.isEmpty then "nothing at all"
                              else String.intercalate ", " observed)] ++
-      (if bad.isEmpty then ["  no theorem depends on anything else"]
-       else bad.map (fun l => "  " ++ l.name ++ "  uses  " ++
+      (if bad.isEmpty then [] else bad.map (fun l => "  " ++ l.name ++ "  uses  " ++
               String.intercalate ", " (offending cfg l))) ++
-      (if complaints == "" then [] else ["", "  the audit driver reported:"] ++
-        (Util.lines complaints).map (fun l => "      " ++ l)))
-  return (if bad.isEmpty then 0 else 1)
+      declared.map (fun d => "  " ++ d.1 ++ ":" ++ toString d.2.2 ++ "  declares axiom " ++
+              d.2.1) ++
+      audit.unaudited.map (fun n => "  " ++ n ++ "  could not be audited") ++
+      (if audit.exitCode == 0 then []
+       else [s!"  the audit driver exited with code {audit.exitCode}"]) ++
+      (if audit.errors.isEmpty then [] else ["", "  the audit driver reported:"] ++
+        audit.errors.map (fun l => "      " ++ l)) ++
+      (if ok then ["  no theorem depends on anything else"] else []))
+  return (if ok then 0 else 1)
 
 /-- `gokujo check`: every gate, in order. -/
 def check (a : Args) : IO UInt32 := do
